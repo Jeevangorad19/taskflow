@@ -13,6 +13,12 @@ import {
   getFirestore, collection, doc, setDoc, deleteDoc,
   onSnapshot, enableIndexedDbPersistence
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA2wg4QAC8qz5V_R2Zz6637xtfTR1WmR7s",
@@ -24,23 +30,17 @@ const firebaseConfig = {
   measurementId: "G-RQCJE33K61"
 };
 
-const app = initializeApp(firebaseConfig);
-const db  = getFirestore(app);
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
 
 // ── Offline persistence (works even with no internet) ──
 enableIndexedDbPersistence(db).catch(()=>{});
 
-// ── Expose Firestore helpers to the global scope ──
+// ── Expose Firestore + Auth helpers to the global scope ──
 window._fs = {
-  // Save / overwrite a document in a collection
-  async set(colName, id, data){
-    await setDoc(doc(db, colName, id), data);
-  },
-  // Delete a document
-  async del(colName, id){
-    await deleteDoc(doc(db, colName, id));
-  },
-  // Real-time listener → calls cb(docsArray) on every change
+  async set(colName, id, data){ await setDoc(doc(db, colName, id), data); },
+  async del(colName, id){ await deleteDoc(doc(db, colName, id)); },
   listen(colName, cb){
     return onSnapshot(collection(db, colName), snap => {
       cb(snap.docs.map(d => d.data()));
@@ -48,31 +48,49 @@ window._fs = {
   }
 };
 
-// ── Bootstrap: start listening once the page scripts are ready ──
+// ── Firebase Auth helpers exposed globally ──
+window._auth = {
+  // Admin login via Firebase Authentication (email + password)
+  async loginAdmin(email, password){
+    return await signInWithEmailAndPassword(auth, email, password);
+  },
+  async logout(){
+    await signOut(auth);
+  }
+};
+
+// ── Auto-restore session if user is already signed in ──
+onAuthStateChanged(auth, (user) => {
+  // Only auto-enter if login screen is still showing (page load)
+  const loginVisible = !document.getElementById('login-screen').classList.contains('hidden');
+  if(user && loginVisible){
+    // Restore admin session on page reload
+    enterApp('admin', user.displayName || user.email.split('@')[0], 'Administrator');
+  }
+});
+
+// ── Bootstrap: start Firestore listeners once page scripts are ready ──
 window.addEventListener('firebaseReady', () => {
-  // Listen to members
   window._fs.listen('members', docs => {
     DB.members = docs;
-    // refresh any open view
-    if(document.querySelector('#p-members.active'))  renderMembers();
-    if(document.querySelector('#p-tasks.active'))     renderTasks();
-    if(document.querySelector('#p-kanban.active'))    renderKanban();
-    if(document.querySelector('#p-dashboard.active')) renderDashboard();
-    if(document.querySelector('#p-analytics.active')) renderAnalytics();
+    if(document.querySelector('#p-members.active'))   renderMembers();
+    if(document.querySelector('#p-tasks.active'))      renderTasks();
+    if(document.querySelector('#p-kanban.active'))     renderKanban();
+    if(document.querySelector('#p-dashboard.active'))  renderDashboard();
+    if(document.querySelector('#p-analytics.active'))  renderAnalytics();
     if(document.querySelector('#p-performance.active'))renderPerf();
-    if(document.querySelector('#p-mytasks.active'))   renderMyTasks();
-    if(document.querySelector('#p-mystats.active'))   renderMyStats();
+    if(document.querySelector('#p-mytasks.active'))    renderMyTasks();
+    if(document.querySelector('#p-mystats.active'))    renderMyStats();
   });
-  // Listen to tasks
   window._fs.listen('tasks', docs => {
     DB.tasks = docs;
-    if(document.querySelector('#p-dashboard.active')) renderDashboard();
-    if(document.querySelector('#p-tasks.active'))     renderTasks();
-    if(document.querySelector('#p-kanban.active'))    renderKanban();
-    if(document.querySelector('#p-analytics.active')) renderAnalytics();
+    if(document.querySelector('#p-dashboard.active'))  renderDashboard();
+    if(document.querySelector('#p-tasks.active'))      renderTasks();
+    if(document.querySelector('#p-kanban.active'))     renderKanban();
+    if(document.querySelector('#p-analytics.active'))  renderAnalytics();
     if(document.querySelector('#p-performance.active'))renderPerf();
-    if(document.querySelector('#p-mytasks.active'))   renderMyTasks();
-    if(document.querySelector('#p-mystats.active'))   renderMyStats();
+    if(document.querySelector('#p-mytasks.active'))    renderMyTasks();
+    if(document.querySelector('#p-mystats.active'))    renderMyStats();
   });
 });
 </script>
@@ -214,10 +232,18 @@ tr:hover td{background:#1a2135}
       <button class="role-tab active" onclick="setRole('admin')"><i class="ti ti-shield-check"></i> Admin</button>
       <button class="role-tab" onclick="setRole('member')"><i class="ti ti-user"></i> Member</button>
     </div>
-    <div class="form-group"><label>Username</label><input id="lu" type="text" placeholder="Enter username" autocomplete="username"></div>
-    <div class="form-group"><label>Password</label><input id="lp" type="password" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()"></div>
-    <button class="btn-login" onclick="doLogin()"><i class="ti ti-login"></i> Sign In</button>
-    <div class="login-error" id="lerr">Invalid credentials. Please try again.</div>
+    <!-- Admin: email login via Firebase Auth -->
+    <div id="admin-fields">
+      <div class="form-group"><label>Email</label><input id="lu-email" type="email" placeholder="admin@example.com" autocomplete="email"></div>
+      <div class="form-group"><label>Password</label><input id="lp-admin" type="password" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    </div>
+    <!-- Member: username login via Firestore -->
+    <div id="member-fields" class="hidden">
+      <div class="form-group"><label>Username</label><input id="lu" type="text" placeholder="Enter username" autocomplete="username"></div>
+      <div class="form-group"><label>Password</label><input id="lp" type="password" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    </div>
+    <button class="btn-login" id="btn-login" onclick="doLogin()"><i class="ti ti-login"></i> Sign In</button>
+    <div class="login-error" id="lerr"></div>
   </div>
 </div>
 
@@ -453,7 +479,6 @@ async function fsDelTask(id){
 // ════════════════════════════════════════
 //  AUTH
 // ════════════════════════════════════════
-const ADMIN = { user:'admin', pass:'admin123' };
 let CU = null; // current user
 let loginRole = 'admin';
 let statusTaskId = null;
@@ -462,19 +487,56 @@ let CH = {}; // chart instances
 function setRole(r){
   loginRole = r;
   document.querySelectorAll('.role-tab').forEach((el,i)=>el.classList.toggle('active', i===(r==='admin'?0:1)));
+  $('admin-fields').classList.toggle('hidden', r!=='admin');
+  $('member-fields').classList.toggle('hidden', r!=='member');
 }
 
-function doLogin(){
-  const u = $('lu').value.trim();
-  const p = $('lp').value;
+async function doLogin(){
+  const btn = $('btn-login');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader-2"></i> Signing in…';
   $('lerr').style.display = 'none';
-  if(loginRole==='admin'){
-    if(u===ADMIN.user && p===ADMIN.pass){ enterApp('admin','Admin','Administrator'); return; }
+  $('lerr').textContent = '';
+
+  if(loginRole === 'admin'){
+    // ── Firebase Authentication (email/password) ──
+    const email = $('lu-email').value.trim();
+    const pass  = $('lp-admin').value;
+    if(!email || !pass){
+      showLoginErr('Please enter your email and password.');
+      btn.disabled = false; btn.innerHTML = '<i class="ti ti-login"></i> Sign In'; return;
+    }
+    try {
+      await window._auth.loginAdmin(email, pass);
+      const displayName = email.split('@')[0];
+      enterApp('admin', displayName, 'Administrator');
+    } catch(err){
+      const msg = err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found'
+        ? 'Invalid email or password.'
+        : err.code === 'auth/invalid-email'
+        ? 'Please enter a valid email address.'
+        : err.code === 'auth/too-many-requests'
+        ? 'Too many failed attempts. Try again later.'
+        : 'Login failed: ' + err.message;
+      showLoginErr(msg);
+    }
   } else {
-    const m = DB.members.find(x=>x.username===u && x.password===p);
-    if(m){ enterApp('member', m.name, m.role||'Team Member', m.id); return; }
+    // ── Member login via Firestore lookup ──
+    const u = $('lu').value.trim();
+    const p = $('lp').value;
+    const m = DB.members.find(x => x.username === u && x.password === p);
+    if(m){ enterApp('member', m.name, m.role || 'Team Member', m.id); }
+    else { showLoginErr('Invalid username or password.'); }
   }
-  $('lerr').style.display = 'block';
+
+  btn.disabled = false;
+  btn.innerHTML = '<i class="ti ti-login"></i> Sign In';
+}
+
+function showLoginErr(msg){
+  const el = $('lerr');
+  el.textContent = msg;
+  el.style.display = 'block';
 }
 
 function enterApp(role, name, roleLabel, mid=null){
@@ -490,11 +552,16 @@ function enterApp(role, name, roleLabel, mid=null){
   else { $('mwelcome').textContent = 'Hello, '+name+'! Here are your assigned tasks.'; go('mytasks'); }
 }
 
-function doLogout(){
+async function doLogout(){
+  // Sign out of Firebase Auth if admin
+  if(CU && CU.role === 'admin' && window._auth){
+    try { await window._auth.logout(); } catch(e){}
+  }
   CU = null;
   $('app').classList.add('hidden');
   $('login-screen').classList.remove('hidden');
-  $('lu').value=''; $('lp').value='';
+  $('lu-email').value = ''; $('lp-admin').value = '';
+  $('lu').value = ''; $('lp').value = '';
 }
 
 // ════════════════════════════════════════
@@ -771,7 +838,7 @@ function openMember(id=null){
 function saveMember(){
   const name=$('mn').value.trim(), uname=$('mu').value.trim().toLowerCase(), pass=$('mp').value, role=$('mr').value.trim();
   if(!name||!uname||!pass){ toast('Name, username and password are required','err'); return; }
-  if(uname===ADMIN.user){ toast('Username "admin" is reserved','err'); return; }
+  if(uname==='admin'){ toast('Username "admin" is reserved','err'); return; }
   const eid=$('mod-member').dataset.eid;
   if(!eid && DB.members.find(m=>m.username===uname)){ toast('Username already taken','err'); return; }
   if(eid){
