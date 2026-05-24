@@ -6,6 +6,76 @@
 <title>TaskFlow — Team Task Tracker</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<!-- Firebase SDK (CDN — no npm needed for GitHub Pages) -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getFirestore, collection, doc, setDoc, deleteDoc,
+  onSnapshot, enableIndexedDbPersistence
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA2wg4QAC8qz5V_R2Zz6637xtfTR1WmR7s",
+  authDomain: "task-tracker-424f2.firebaseapp.com",
+  projectId: "task-tracker-424f2",
+  storageBucket: "task-tracker-424f2.firebasestorage.app",
+  messagingSenderId: "325135553993",
+  appId: "1:325135553993:web:fba9087d864af3a0be0418",
+  measurementId: "G-RQCJE33K61"
+};
+
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ── Offline persistence (works even with no internet) ──
+enableIndexedDbPersistence(db).catch(()=>{});
+
+// ── Expose Firestore helpers to the global scope ──
+window._fs = {
+  // Save / overwrite a document in a collection
+  async set(colName, id, data){
+    await setDoc(doc(db, colName, id), data);
+  },
+  // Delete a document
+  async del(colName, id){
+    await deleteDoc(doc(db, colName, id));
+  },
+  // Real-time listener → calls cb(docsArray) on every change
+  listen(colName, cb){
+    return onSnapshot(collection(db, colName), snap => {
+      cb(snap.docs.map(d => d.data()));
+    });
+  }
+};
+
+// ── Bootstrap: start listening once the page scripts are ready ──
+window.addEventListener('firebaseReady', () => {
+  // Listen to members
+  window._fs.listen('members', docs => {
+    DB.members = docs;
+    // refresh any open view
+    if(document.querySelector('#p-members.active'))  renderMembers();
+    if(document.querySelector('#p-tasks.active'))     renderTasks();
+    if(document.querySelector('#p-kanban.active'))    renderKanban();
+    if(document.querySelector('#p-dashboard.active')) renderDashboard();
+    if(document.querySelector('#p-analytics.active')) renderAnalytics();
+    if(document.querySelector('#p-performance.active'))renderPerf();
+    if(document.querySelector('#p-mytasks.active'))   renderMyTasks();
+    if(document.querySelector('#p-mystats.active'))   renderMyStats();
+  });
+  // Listen to tasks
+  window._fs.listen('tasks', docs => {
+    DB.tasks = docs;
+    if(document.querySelector('#p-dashboard.active')) renderDashboard();
+    if(document.querySelector('#p-tasks.active'))     renderTasks();
+    if(document.querySelector('#p-kanban.active'))    renderKanban();
+    if(document.querySelector('#p-analytics.active')) renderAnalytics();
+    if(document.querySelector('#p-performance.active'))renderPerf();
+    if(document.querySelector('#p-mytasks.active'))   renderMyTasks();
+    if(document.querySelector('#p-mystats.active'))   renderMyStats();
+  });
+});
+</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,-apple-system,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;font-size:14px}
@@ -351,31 +421,34 @@ tr:hover td{background:#1a2135}
 
 <script>
 // ════════════════════════════════════════
-//  DATA — stored in localStorage
+//  DATA — stored in Firebase Firestore
 // ════════════════════════════════════════
-const LSKEY = 'taskflow_v2';
-
-// Default seed data (only used on first load)
-const SEED = {
-  members: [],
-  tasks: []
-};
-
 let DB = { members:[], tasks:[] };
 
-function loadDB(){
-  try{
-    const raw = localStorage.getItem(LSKEY);
-    DB = raw ? JSON.parse(raw) : JSON.parse(JSON.stringify(SEED));
-  } catch(e){ DB = JSON.parse(JSON.stringify(SEED)); }
-}
+// loadDB is now a no-op: Firestore listeners keep DB in sync
+function loadDB(){ /* real-time listeners handle this */ }
 
-function saveDB(){
-  try{ localStorage.setItem(LSKEY, JSON.stringify(DB)); }
-  catch(e){ toast('Storage full — clear browser data to continue','err'); }
-}
+// saveDB writes the whole DB object — kept for legacy call-sites that
+// pass no args; individual CRUD functions call the granular helpers below.
+function saveDB(){ /* no-op — granular saves used instead */ }
 
-loadDB();
+// ── Granular Firestore helpers (called by CRUD functions) ──
+async function fsSetMember(m){
+  if(!window._fs) return;
+  await window._fs.set('members', m.id, m);
+}
+async function fsDelMember(id){
+  if(!window._fs) return;
+  await window._fs.del('members', id);
+}
+async function fsSetTask(t){
+  if(!window._fs) return;
+  await window._fs.set('tasks', t.id, t);
+}
+async function fsDelTask(id){
+  if(!window._fs) return;
+  await window._fs.del('tasks', id);
+}
 
 // ════════════════════════════════════════
 //  AUTH
@@ -395,7 +468,6 @@ function doLogin(){
   const u = $('lu').value.trim();
   const p = $('lp').value;
   $('lerr').style.display = 'none';
-  loadDB();
   if(loginRole==='admin'){
     if(u===ADMIN.user && p===ADMIN.pass){ enterApp('admin','Admin','Administrator'); return; }
   } else {
@@ -671,14 +743,16 @@ function saveTask(){
   const t={id:eid||uid(), title, desc:$('td').value.trim(), mid, priority:$('tpr').value, deadline:$('tdl').value, status:$('tst').value, at:Date.now()};
   if(eid){ const i=DB.tasks.findIndex(x=>x.id===eid); if(i>-1){t.at=DB.tasks[i].at; DB.tasks[i]=t;} }
   else DB.tasks.push(t);
-  saveDB(); closeM('mod-task'); toast(eid?'Task updated!':'Task created!');
+  fsSetTask(t).catch(e=>toast('Save failed: '+e.message,'err'));
+  closeM('mod-task'); toast(eid?'Task updated!':'Task created!');
   renderDashboard(); renderTasks(); renderKanban();
 }
 
 function delTask(id){
   if(!confirm('Delete this task? This cannot be undone.')) return;
   DB.tasks=DB.tasks.filter(x=>x.id!==id);
-  saveDB(); toast('Task deleted');
+  fsDelTask(id).catch(e=>toast('Delete failed: '+e.message,'err'));
+  toast('Task deleted');
   renderDashboard(); renderTasks(); renderKanban();
 }
 
@@ -702,17 +776,22 @@ function saveMember(){
   if(!eid && DB.members.find(m=>m.username===uname)){ toast('Username already taken','err'); return; }
   if(eid){
     const i=DB.members.findIndex(m=>m.id===eid);
-    if(i>-1) DB.members[i]={...DB.members[i],name,username:uname,password:pass,role};
+    const updated={...DB.members[i]||{},name,username:uname,password:pass,role};
+    if(i>-1) DB.members[i]=updated;
+    fsSetMember(updated).catch(e=>toast('Save failed: '+e.message,'err'));
   } else {
-    DB.members.push({id:uid(),name,username:uname,password:pass,role,at:Date.now()});
+    const nm={id:uid(),name,username:uname,password:pass,role,at:Date.now()};
+    DB.members.push(nm);
+    fsSetMember(nm).catch(e=>toast('Save failed: '+e.message,'err'));
   }
-  saveDB(); closeM('mod-member'); toast(eid?'Member updated!':'Member added!'); renderMembers();
+  closeM('mod-member'); toast(eid?'Member updated!':'Member added!'); renderMembers();
 }
 
 function delMember(id){
   if(!confirm('Remove this member? Their tasks will remain in the system.')) return;
   DB.members=DB.members.filter(m=>m.id!==id);
-  saveDB(); toast('Member removed'); renderMembers();
+  fsDelMember(id).catch(e=>toast('Delete failed: '+e.message,'err'));
+  toast('Member removed'); renderMembers();
 }
 
 // ════════════════════════════════════════
@@ -748,7 +827,7 @@ function openStatus(id){
 
 function saveStatus(){
   const t=DB.tasks.find(x=>x.id===statusTaskId);
-  if(t){ t.status=$('st-val').value; saveDB(); toast('Status updated!'); }
+  if(t){ t.status=$('st-val').value; fsSetTask(t).catch(e=>toast('Save failed: '+e.message,'err')); toast('Status updated!'); }
   closeM('mod-status'); renderMyTasks(); renderMyStats();
 }
 
@@ -775,6 +854,9 @@ function renderMyStats(){
     });
   },80);
 }
+
+// Signal to the Firebase module (loaded above) that app scripts are ready
+window.dispatchEvent(new Event('firebaseReady'));
 </script>
 </body>
 </html>
